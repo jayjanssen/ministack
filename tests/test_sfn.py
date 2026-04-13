@@ -552,9 +552,10 @@ def test_sfn_aws_sdk_rds_create_and_describe_cluster(sfn, sfn_sync):
     assert create_cluster["DbClusterIdentifier"] == cluster_id
     assert create_cluster["Engine"] == "aurora-postgresql"
 
-    # Verify describe result contains cluster data
+    # Verify describe result contains cluster data (DbClusters is a list)
     describe_clusters = output["describeResult"]["DbClusters"]
-    assert "DbCluster" in describe_clusters
+    assert isinstance(describe_clusters, list)
+    assert len(describe_clusters) >= 1
 
     sfn_sync.delete_state_machine(stateMachineArn=sm_arn)
 
@@ -649,7 +650,7 @@ def test_sfn_aws_sdk_rds_modify_cluster(sfn, sfn_sync, rds):
     resp = sfn_sync.start_sync_execution(stateMachineArn=sm_arn, input=json.dumps({}))
     assert resp["status"] == "SUCCEEDED", f"Execution failed: {resp.get('error')} — {resp.get('cause')}"
     output = json.loads(resp["output"])
-    assert output["modifyResult"]["DbCluster"]["BackupRetentionPeriod"] == "7"
+    assert output["modifyResult"]["DbCluster"]["BackupRetentionPeriod"] == 7
 
     sfn_sync.delete_state_machine(stateMachineArn=sm_arn)
 
