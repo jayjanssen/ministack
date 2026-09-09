@@ -4836,7 +4836,14 @@ def _execute_function_dispatch(func: dict, config: dict, event: dict,
     else:
         runtime = config.get("Runtime", "python3.12")
         if runtime.startswith("provided"):
-            result = _execute_function_provided(func, event)
+            # Durable invocations need a per-call environment (the
+            # DurableExecutionArn / CheckpointToken change every invoke), and a
+            # reused environment's env is fixed at spawn — so they keep the
+            # one-shot executor, exactly as durable python/nodejs does above.
+            if _durable_ctx.get():
+                result = _execute_function_provided(func, event)
+            else:
+                result = _execute_function_provided_warm(func, event)
         elif (runtime.startswith("python") or runtime.startswith("nodejs")) \
                 and not _durable_ctx.get():
             # Warm pool reuses worker subprocesses whose env was fixed at
@@ -5047,6 +5054,89 @@ def _execute_function_warm(func: dict, event: dict) -> dict:
             "error": True,
             "log": "",
         }
+    finally:
+        release_worker(worker)
+
+
+def _provided_worker_env(config: dict, code_dir: str, port: int) -> dict:
+    """Build the process environment for a ``provided.*`` bootstrap binary.
+
+    Shared by the one-shot executor and the warm ``ProvidedWorker`` so the two
+    paths cannot drift. Per-invocation values (X-Ray trace ID) are deliberately
+    absent: a reused environment cannot carry them in env, and the Runtime API
+    has headers for exactly that.
+    """
+    env_vars = _runtime_env_vars(config)
+    proc_env = dict(os.environ)
+    proc_env.update({
+        "AWS_LAMBDA_RUNTIME_API": f"127.0.0.1:{port}",
+        "AWS_DEFAULT_REGION": get_region(),
+        "AWS_REGION": get_region(),
+        "AWS_ACCESS_KEY_ID": _account_region_from_function_config(config)[0],
+        "AWS_SECRET_ACCESS_KEY": os.environ.get("AWS_SECRET_ACCESS_KEY", "test"),
+        "AWS_LAMBDA_FUNCTION_NAME": config.get("FunctionName", "unknown"),
+        "AWS_LAMBDA_FUNCTION_MEMORY_SIZE": str(config.get("MemorySize", 128)),
+        "AWS_LAMBDA_FUNCTION_VERSION": config.get("Version", "$LATEST"),
+        "AWS_LAMBDA_LOG_STREAM_NAME": new_uuid(),
+        "LAMBDA_TASK_ROOT": code_dir,
+        "_HANDLER": config.get("Handler", "bootstrap"),
+    })
+    proc_env.update(env_vars)
+    proc_env.update(_durable_env_overlay())
+    # Override AWS_ENDPOINT_URL *after* function env vars so Lambda binaries
+    # always call back to this MiniStack instance.
+    endpoint = os.environ.get("AWS_ENDPOINT_URL", "")
+    if not endpoint:
+        hostname = os.environ.get("LOCALSTACK_HOSTNAME", "")
+        if hostname:
+            endpoint = _normalize_endpoint_url(hostname)
+    if endpoint:
+        proc_env["AWS_ENDPOINT_URL"] = endpoint
+    return proc_env
+
+
+def _execute_function_provided_warm(func: dict, event: dict) -> dict:
+    """Execute a ``provided.*`` Lambda on a pooled, reused environment."""
+    config = func.get("config") or func
+    code_zip = func.get("code_zip")
+    if not code_zip:
+        return {"body": {"statusCode": 200, "body": "Mock response - no code deployed"}}
+
+    func_name = config.get("FunctionName", "unknown")
+    qualifier = config.get("Version", "$LATEST")
+    _ensure_reaper_thread()
+    worker, reason = acquire_worker(func_name, config, code_zip, qualifier=qualifier)
+    if worker is None and reason == "func_cap":
+        return _throttle_response(
+            reason_code="ReservedFunctionConcurrentInvocationLimitExceeded",
+            msg=f"Rate Exceeded: function {func_name} warm-worker ceiling reached",
+        )
+    try:
+        # Rides to the worker in the event and leaves as a Runtime API header;
+        # ProvidedWorker.invoke pops it before the payload reaches the handler.
+        _xray = _xray_trace_id_for_invocation(config)
+        if _xray and isinstance(event, dict):
+            event["_x_amzn_trace_id"] = _xray
+        result = worker.invoke(event, new_uuid())
+        if result.get("status") == "ok":
+            return {"body": result.get("result"), "log": result.get("log", "")}
+        payload = result.get("error_payload")
+        if isinstance(payload, dict):
+            return {"body": payload, "error": True, "log": result.get("log", "")}
+        error_msg = result.get("error", "Unknown error")
+        error_type = ("Runtime.ExitError" if "timed out" in error_msg.lower()
+                      else "Runtime.HandlerError")
+        return {
+            "body": {"errorMessage": error_msg, "errorType": error_type},
+            "error": True,
+            "log": result.get("log", ""),
+        }
+    except Exception as e:
+        logger.error("Warm provided-runtime execution error for %s: %s", func_name, e)
+        # A failed environment must not fail the invocation outright: fall back
+        # to the one-shot executor, which rebuilds everything from scratch.
+        invalidate_worker(func_name, qualifier=qualifier)
+        return _execute_function_provided(func, event)
     finally:
         release_worker(worker)
 
