@@ -1,9 +1,13 @@
-"""Unit coverage for PostgreSQL TLS container launch; no Docker daemon needed."""
+"""PostgreSQL TLS unit tests plus explicitly opt-in, isolated Docker coverage."""
 
 import copy
 import datetime
 import io
+import os
 import tarfile
+import time
+import uuid
+from contextlib import ExitStack, closing
 from unittest.mock import Mock, call
 
 import pytest
@@ -243,3 +247,160 @@ def test_cold_image_pull_preserves_replication_arguments(pem_files, docker_clien
         call.containers.create().start(),
     ]
     assert container_kwargs == original
+
+
+@pytest.fixture
+def live_tls_material(tmp_path, monkeypatch):
+    """Issue a temporary SAN leaf and an unrelated CA; never use shared secrets."""
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+
+    def issue(name, key, issuer=None, issuer_key=None, ca=False):
+        subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, name)])
+        builder = (
+            x509.CertificateBuilder()
+            .subject_name(subject)
+            .issuer_name(issuer.subject if issuer else subject)
+            .public_key(key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now - datetime.timedelta(minutes=5))
+            .not_valid_after(now + datetime.timedelta(days=1))
+            .add_extension(x509.BasicConstraints(ca=ca, path_length=None), critical=True)
+        )
+        if not ca:
+            builder = builder.add_extension(
+                x509.SubjectAlternativeName([x509.DNSName("localhost")]), critical=False,
+            ).add_extension(
+                x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False,
+            )
+        return builder.sign(issuer_key or key, hashes.SHA256())
+
+    ca_key, leaf_key, wrong_key = [
+        rsa.generate_private_key(public_exponent=65537, key_size=2048) for _ in range(3)
+    ]
+    ca = issue("test-ca", ca_key, ca=True)
+    leaf = issue("localhost", leaf_key, ca, ca_key)
+    wrong_ca = issue("unrelated-ca", wrong_key, ca=True)
+    paths = {}
+    for name, cert in (("ca", ca), ("server", leaf), ("wrong-ca", wrong_ca)):
+        paths[name] = tmp_path / f"{name}.crt"
+        paths[name].write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    key_path = tmp_path / "server.key"
+    key_path.write_bytes(leaf_key.private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ))
+    key_path.chmod(0o600)
+    monkeypatch.setenv("MINISTACK_RDS_PG_SSL_CERT", str(paths["server"]))
+    monkeypatch.setenv("MINISTACK_RDS_PG_SSL_KEY", str(key_path))
+    return paths
+
+
+@pytest.mark.skipif(
+    os.environ.get("MINISTACK_TEST_RDS_TLS_DOCKER") != "1",
+    reason="set MINISTACK_TEST_RDS_TLS_DOCKER=1 to run isolated live Docker TLS tests",
+)
+def test_live_postgres_tls_and_volume_restart(live_tls_material):
+    """Requires local Docker; optionally set MINISTACK_TEST_RDS_TLS_IMAGE.
+
+    No MiniStack HTTP server is used (including its shared reset endpoint).
+    ExitStack's finally cleanup owns only the UUID-named resources created here.
+    """
+    import docker
+    import psycopg2
+
+    name = f"ministack-tls-test-{uuid.uuid4().hex}"
+    password = uuid.uuid4().hex
+    with ExitStack() as cleanup:
+        client = docker.from_env()
+        cleanup.callback(client.close)
+        network = client.networks.create(name, driver="bridge")
+        cleanup.callback(network.remove)
+        volume = client.volumes.create(name=name)
+        cleanup.callback(volume.remove)
+        container = rds._run_rds_container(client, "postgres", {
+            "image": os.environ.get("MINISTACK_TEST_RDS_TLS_IMAGE", "postgres:16-alpine"),
+            "name": name,
+            "detach": True,
+            "network": network.name,
+            "environment": {
+                "POSTGRES_PASSWORD": password,
+                "PGDATA": "/var/lib/postgresql/data/pgdata",
+            },
+            "volumes": {volume.name: {"bind": "/var/lib/postgresql/data", "mode": "rw"}},
+            "ports": {"5432/tcp": ("127.0.0.1", None)},
+        })
+        cleanup.callback(container.remove, force=True, v=False)
+
+        def connect(**overrides):
+            # Published dynamic ports may change after stop/start.
+            container.reload()
+            bindings = container.attrs["NetworkSettings"]["Ports"]["5432/tcp"]
+            assert bindings and bindings[0]["HostIp"] == "127.0.0.1"
+            options = {
+                "host": "localhost", "hostaddr": "127.0.0.1",
+                "port": int(bindings[0]["HostPort"]),
+                "user": "postgres", "password": password, "dbname": "postgres",
+                "sslmode": "verify-full", "sslrootcert": str(live_tls_material["ca"]),
+                "connect_timeout": 2,
+            }
+            options.update(overrides)
+            return psycopg2.connect(**options)
+
+        def ready():
+            deadline = time.monotonic() + 90
+            while True:
+                try:
+                    with closing(connect()) as connection:
+                        with connection.cursor() as cursor:
+                            cursor.execute("SELECT ssl, version FROM pg_stat_ssl WHERE pid = pg_backend_pid()")
+                            ssl, version = cursor.fetchone()
+                            assert ssl is True
+                            assert version in ("TLSv1.2", "TLSv1.3")
+                    return
+                except psycopg2.OperationalError:
+                    container.reload()
+                    if container.status != "running" or time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.5)
+
+        def assert_permissions():
+            result = container.exec_run([
+                "sh", "-ec",
+                'test "$(stat -c %U:%G:%a /ministack-rds-tls)" = postgres:postgres:700; '
+                'test "$(stat -c %U:%G:%a /ministack-rds-tls/server.crt)" = postgres:postgres:600; '
+                'test "$(stat -c %U:%G:%a /ministack-rds-tls/server.key)" = postgres:postgres:600',
+            ])
+            assert result.exit_code == 0, result.output.decode(errors="replace")
+
+        ready()
+        assert_permissions()
+        with pytest.raises(psycopg2.OperationalError, match="certificate verify failed"):
+            with closing(connect(sslrootcert=str(live_tls_material["wrong-ca"]))):
+                pass
+        with pytest.raises(psycopg2.OperationalError, match="does not match host name"):
+            # hostaddr avoids DNS while libpq verifies the deliberately wrong host.
+            with closing(connect(host="not-localhost.invalid")):
+                pass
+        with closing(connect(sslmode="disable")) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT ssl FROM pg_stat_ssl WHERE pid = pg_backend_pid()")
+                assert cursor.fetchone() == (False,)
+                cursor.execute("CREATE TABLE tls_persistence (value text NOT NULL)")
+                cursor.execute("INSERT INTO tls_persistence VALUES (%s)", (name,))
+            connection.commit()
+
+        container.stop(timeout=10)
+        container.start()
+        ready()
+        assert_permissions()
+        container.reload()
+        assert any(mount.get("Name") == volume.name for mount in container.attrs["Mounts"])
+        with closing(connect()) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT value FROM tls_persistence")
+                assert cursor.fetchall() == [(name,)]
