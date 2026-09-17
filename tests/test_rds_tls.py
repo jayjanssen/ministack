@@ -250,6 +250,80 @@ def test_cold_image_pull_preserves_replication_arguments(pem_files, docker_clien
 
 
 @pytest.fixture
+def isolated_tls_failure_caller(monkeypatch, docker_client):
+    """Exercise real launch callers without shared state, sockets, or workers."""
+    from docker.errors import NotFound
+
+    for name in ("_instances", "_clusters", "_subnet_groups", "_param_groups"):
+        monkeypatch.setattr(rds, name, rds.AccountRegionScopedDict())
+    monkeypatch.setattr(rds, "_get_docker", lambda: docker_client)
+    monkeypatch.setattr(rds, "_get_ministack_network", lambda _client: None)
+    monkeypatch.setattr(rds, "_next_port", lambda: 15432)
+    monkeypatch.setattr(rds, "_is_host_port_free", lambda _port: True)
+    monkeypatch.setattr(rds, "_image_is_local", lambda _client, _image: True)
+    monkeypatch.setattr(rds, "RDS_PG_CLUSTER_REPLICATION", False)
+    docker_client.containers.get.side_effect = NotFound("no persisted container")
+    # Invalid paired configuration must reach the real TLS validator, not a
+    # mocked launch exception (or an unrelated failure earlier in the caller).
+    monkeypatch.setenv("MINISTACK_RDS_PG_SSL_CERT", "")
+    monkeypatch.setenv("MINISTACK_RDS_PG_SSL_KEY", "")
+    launch = Mock(wraps=rds._run_rds_container)
+    monkeypatch.setattr(rds, "_run_rds_container", launch)
+    thread = Mock()
+    background = Mock()
+    monkeypatch.setattr(rds.threading, "Thread", thread)
+    monkeypatch.setattr(rds, "spawn_background", background)
+    yield launch
+    launch.assert_called_once()
+    docker_client.containers.create.assert_not_called()
+    docker_client.containers.run.assert_not_called()
+    thread.assert_not_called()
+    background.assert_not_called()
+
+
+@pytest.mark.parametrize("cluster_member", [False, True], ids=["warm-standalone", "shared-cluster"])
+def test_create_instance_invalid_tls_reports_failed(isolated_tls_failure_caller, cluster_member):
+    params = {"DBInstanceIdentifier": "tls-failure", "Engine": "postgres"}
+    if cluster_member:
+        rds._clusters["tls-cluster"] = {
+            "DBClusterIdentifier": "tls-cluster",
+            "Engine": "aurora-postgresql",
+            "Status": "available",
+            "DBClusterMembers": [],
+        }
+        params["DBClusterIdentifier"] = "tls-cluster"
+
+    status, _, body = rds._create_db_instance_impl(params)
+
+    assert status == 200
+    assert b"<DBInstanceStatus>failed</DBInstanceStatus>" in body
+    instance = rds._instances["tls-failure"]
+    assert instance["DBInstanceStatus"] == "failed"
+    assert instance["_docker_container_id"] is None
+    if cluster_member:
+        cluster = rds._clusters["tls-cluster"]
+        assert cluster["_shared_container_ready"] is False
+        assert cluster["_shared_container_id"] is None
+
+
+@pytest.mark.parametrize("engine", ["postgres", "aurora-postgresql"])
+def test_respawn_invalid_tls_reports_failed(isolated_tls_failure_caller, engine):
+    instance = {
+        "DBInstanceIdentifier": "tls-respawn",
+        "Engine": engine,
+        "DBInstanceStatus": "available",
+        "_docker_volume_name": "retained-data",
+    }
+    rds._instances["tls-respawn"] = instance
+
+    rds._start_rds_container_for_instance("tls-respawn", instance)
+
+    assert instance["DBInstanceStatus"] == "failed"
+    assert instance["_docker_volume_name"] == "retained-data"
+    assert not instance.get("_docker_container_id")
+
+
+@pytest.fixture
 def live_tls_material(tmp_path, monkeypatch):
     """Issue a temporary SAN leaf and an unrelated CA; never use shared secrets."""
     from cryptography import x509
