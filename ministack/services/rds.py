@@ -1114,13 +1114,6 @@ def _run_rds_container(docker_client, engine, container_kwargs):
         command = list(kwargs.get("command") or ["postgres"])
         if command == ["sh", "-c", _PG_READER_BOOTSTRAP_SCRIPT]:
             # sh -c consumes the first following argument as $0, not $1.
-            # Alpine provides su-exec instead of Debian's gosu. Keep this
-            # adjustment scoped to TLS launches and preserve the bootstrap.
-            command[2] = (
-                "if command -v gosu >/dev/null 2>&1; then "
-                "pg_run=gosu; else pg_run=su-exec; fi\n"
-                + command[2].replace("gosu postgres", '"$pg_run" postgres')
-            )
             command.append("ministack-pg-reader")
         command.extend([
             "-c", "ssl=on",
@@ -4505,6 +4498,7 @@ def _create_db_instance_impl(p):
     ms_network = None
 
     deferred_container_start = False
+    tls_launch_failed = False
     docker_client = _get_docker()
     reader_launch = None
     if (
@@ -4672,6 +4666,7 @@ def _create_db_instance_impl(p):
                     readiness_host = "127.0.0.1"
                     readiness_port = host_port
             except Exception as e:
+                tls_launch_failed = isinstance(e, _RdsPostgresTLSError)
                 logger.warning("RDS: Docker failed for %s: %s", db_id, e)
 
     cluster_id = cluster_id_param
@@ -4695,7 +4690,7 @@ def _create_db_instance_impl(p):
         instance_status = "creating"
     if parent and not parent.get("_shared_container_ready", True):
         instance_status = "creating"
-    if parent and start_result.get("failed"):
+    if tls_launch_failed or (parent and start_result.get("failed")):
         instance_status = "failed"
 
     instance = {

@@ -14,7 +14,6 @@ import pytest
 
 from ministack.services import rds
 
-
 TLS_ARGS = [
     "-c", "ssl=on",
     "-c", "ssl_cert_file=/ministack-rds-tls/server.crt",
