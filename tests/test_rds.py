@@ -2677,6 +2677,7 @@ def test_rds_stop_start_cluster_keeps_dns_endpoint(monkeypatch):
     from ministack.services import rds as m
 
     container_ip = "172.31.77.42"
+    restarted_ip = "172.31.77.43"
     network_name = "regression-net"
 
     class FakeContainer:
@@ -2700,6 +2701,12 @@ def test_rds_stop_start_cluster_keeps_dns_endpoint(monkeypatch):
 
         def stop(self, timeout=5):
             self.status = "exited"
+            # A real restart lands on a fresh DHCP lease; simulate the
+            # address change so the test proves the internal wiring is
+            # refreshed rather than accidentally reusing the old value.
+            self.attrs["NetworkSettings"]["Networks"][network_name][
+                "IPAddress"
+            ] = restarted_ip
 
     container = FakeContainer()
 
@@ -2720,11 +2727,17 @@ def test_rds_stop_start_cluster_keeps_dns_endpoint(monkeypatch):
         def __init__(self):
             self.containers = FakeContainers()
 
+    readiness_dials = []
+
+    def _fake_wait_ready(host, port, *_args, **_kwargs):
+        readiness_dials.append((host, port))
+        return True
+
     monkeypatch.setattr(m, "_get_docker", lambda: FakeDocker())
     monkeypatch.setattr(m, "_get_ministack_network", lambda _client: network_name)
     monkeypatch.setattr(m, "_next_port", lambda: 16071)
     monkeypatch.setattr(m, "_is_host_port_free", lambda _port: True)
-    monkeypatch.setattr(m, "_wait_for_database_ready", lambda *_args: True)
+    monkeypatch.setattr(m, "_wait_for_database_ready", _fake_wait_ready)
     monkeypatch.setattr(
         m, "_ensure_mysql_compatibility", lambda *_args, **_kwargs: True,
     )
@@ -2778,11 +2791,16 @@ def test_rds_stop_start_cluster_keeps_dns_endpoint(monkeypatch):
         # The public endpoint survives the restart unchanged.
         assert cluster["_shared_endpoint"]["Address"] == create_address
         assert cluster["Endpoint"] == create_address
-        # Internal wiring is refreshed to the restarted container's address.
-        assert cluster["_shared_internal_address"] == container_ip
+        # Internal wiring is refreshed to the restarted container's NEW
+        # address (the fake moves the IP in stop()), not the stale one.
+        assert cluster["_shared_internal_address"] == restarted_ip
+        # The readiness probe dials the new address directly, on the
+        # container port — never the public name or the old IP.
+        assert (restarted_ip, cluster["_shared_internal_port"]) in readiness_dials
 
         member = m._instances.get("dns-endpoint-writer")
         assert member["Endpoint"]["Address"] == create_address
+        assert member["_internal_address"] == restarted_ip
     finally:
         m._instances.clear()
         m._clusters.clear()
