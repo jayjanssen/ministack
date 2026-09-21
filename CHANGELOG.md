@@ -10,6 +10,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - **RDS — PostgreSQL TLS with long endpoint names** — use a short certificate common name while retaining complete DNS and IP subject alternative names, so endpoints longer than 64 bytes no longer fail certificate generation.
+- **CloudFormation — `AWS::ApiGateway::Stage` method settings reach the stage as a map** — the template's `MethodSettings` list was stored verbatim, so the throttling lookup added in 1.5.14 raised on it and every request to a CloudFormation- or SAM-deployed API answered 500. The list is now keyed `"<resourcePath>/<httpMethod>"`, `"*/*"` for the stage-wide entry, over the account-level defaults AWS reports from `GetStage`.
 
 ## [1.5.14] — 2026-09-20
 
