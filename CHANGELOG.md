@@ -5,6 +5,12 @@ All notable changes to MiniStack will be documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Versioning follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **RDS — PostgreSQL TLS with long endpoint names** — use a short certificate common name while retaining complete DNS and IP subject alternative names, so endpoints longer than 64 bytes no longer fail certificate generation.
+
 ## [1.5.14] — 2026-09-20
 
 ### Added
