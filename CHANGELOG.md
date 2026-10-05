@@ -8,6 +8,7 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **Lambda — preserve invocation aliases in runtime context** — `Invoke` retains the requested alias or version in `invoked_function_arn`, while `function_version` remains the resolved published version. Warm workers receive invocation identity per request.
 
 - **Cognito — app client secret hashes** — clients created with `GenerateSecret=true` require a valid `SecretHash` on signup, confirmation and password recovery, and `SECRET_HASH` on authentication and challenge responses. Missing or incorrect hashes return `NotAuthorizedException` before user changes, email delivery or Lambda triggers. Clients without a secret reject a supplied hash on self-service and initial authentication calls, while refresh and challenge responses ignore it, as on AWS. Refresh authentication verifies the token owner's username, or `sub` when the pool uses `UsernameAttributes`, and custom challenge sessions cannot be answered through a different client. The checks apply in both `AUTH` modes.
 ### Added
