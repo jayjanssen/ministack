@@ -14,6 +14,8 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Step Functions — retry `StopExecution` after an abort** — an already-aborted execution now returns its original stop date instead of `ValidationException`. A retry preserves the first error/cause and emits no duplicate abort event.
+
 - **Container reaping — one unreadable container no longer stops the sweep** — the boot sweep and the periodic reaper now list containers without inspecting each one, so a container whose inspect fails is skipped instead of leaving every leftover running. Reported by @iot-rocket.
 - **API Gateway — management IAM actions and resource paths** — with `AUTH=true`, REST and HTTP/WebSocket API management requests use `apigateway:GET`, `POST`, `PUT`, `PATCH` and `DELETE` instead of SDK operation names. Resource ARNs preserve stage names, nested resources and collection paths, and ignore trailing slashes as AWS does, so scoped grants and explicit stage denies apply to the requested resource.
 - **RDS — global cluster tags** — `CreateGlobalCluster` now stores explicit tags and returns `TagList`. Global cluster descriptions track tag additions and removals; renaming preserves tags and deletion clears them before identifier reuse. Contributed by @jayjanssen.
