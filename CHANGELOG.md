@@ -7,6 +7,10 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **Step Functions — optimized DynamoDB error names** — conditional failures and other service errors now use the `DynamoDB.` prefix so exact `Catch` and `Retry` handlers match AWS.
+- **Step Functions — Lambda `GetFunction` SDK integration** — workflows can read function configuration, code metadata and tags through `aws-sdk:lambda:getFunction`, including qualified reads.
+
 ## [1.5.24] — 2026-10-08
 
 ### Added
