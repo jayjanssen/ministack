@@ -62,10 +62,10 @@ def test_reboot_is_async_and_waits_for_sql(monkeypatch, instance):
 
 @pytest.mark.data_plane
 def test_reboot_preserves_mysql_data_and_breaks_sessions(monkeypatch, instance):
+    import socket
+
     import docker
     import pymysql
-
-    import socket
     client = docker.from_env()
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))

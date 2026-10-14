@@ -7,6 +7,9 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **RDS — reboot event history** — `DescribeEvents` returns account/region-scoped reboot completion events with source, category and time filtering, markers, 14-day retention, persistence and reset support. Reboot events are recorded after readiness succeeds; other RDS lifecycle event producers are not yet implemented.
+
 ### Changed
 - **RDS — real instance reboot** — `RebootDBInstance` now returns `rebooting`, stops and starts its backing database container, and waits for SQL readiness before reporting `available`. Data and endpoint bindings are preserved. Optional `RDS_REBOOT_DOWNTIME_SECONDS` (0–3600, default 0) holds the engine stopped for local outage testing. Docker failures no longer report a successful reboot.
 

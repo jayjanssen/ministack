@@ -4846,6 +4846,8 @@ def test_rds_reboot_db_instance(rds):
 
         desc = rds.describe_db_instances(DBInstanceIdentifier="reboot-test")
         assert desc["DBInstances"][0]["DBInstanceStatus"] == "available"
+        events = rds.describe_events(SourceIdentifier="reboot-test", SourceType="db-instance")["Events"]
+        assert any(event["Message"] == "DB instance restarted" for event in events)
     finally:
         rds.delete_db_instance(DBInstanceIdentifier="reboot-test", SkipFinalSnapshot=True)
 
