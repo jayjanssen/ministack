@@ -7,6 +7,9 @@ Versioning follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- **RDS — real instance reboot** — `RebootDBInstance` now returns `rebooting`, stops and starts its backing database container, and waits for SQL readiness before reporting `available`. Data and endpoint bindings are preserved. Optional `RDS_REBOOT_DOWNTIME_SECONDS` (0–3600, default 0) holds the engine stopped for local outage testing. Docker failures no longer report a successful reboot.
+
 ### Fixed
 - **IoT — mTLS refusals close without a CONNACK under `AUTH=true`** — with `AUTH=true` the mTLS listener closes the connection of an unknown, inactive, revoked or doubly-registered client certificate after its CONNECT without sending a CONNACK, as AWS does on MQTT 3.1.1 and 5; without `AUTH` it still answers a "not authorized" CONNACK, and the log names the reason either way. Contributed by @iot-rocket.
 - **IoT — `AttachPolicy` to a target that does not exist** — `AttachPolicy` and `AttachPrincipalPolicy` accepted any target string; they now answer `ResourceNotFoundException` for an unknown certificate or thing group, `InvalidRequestException` for anything else that is not a certificate, a thing group (`AttachPolicy` only) or a Cognito identity id, and `AccessDeniedException` for another account's certificate, which also fails an `AWS::IoT::PolicyPrincipalAttachment` naming such a principal. Contributed by @iot-rocket.
