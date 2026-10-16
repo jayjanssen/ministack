@@ -512,6 +512,99 @@ def test_iot_describe_unknown_thing_404(iot_client):
     assert ei.value.response["Error"]["Code"] == "ResourceNotFoundException"
 
 
+_NO_PRINCIPAL = "because the principal does not exist in your account"
+
+
+@pytest.mark.parametrize("operation, kwargs, message", [
+    ("describe_thing", {"thingName": "{nothing}"}, "Thing {account}:{nothing} not found."),
+    ("update_thing", {"thingName": "{nothing}"}, "Thing {nothing} not found."),
+    ("list_thing_principals", {"thingName": "{nothing}"},
+     "Failed to list principals for thing{nothing} because the thing does not exist in your account"),
+    ("attach_thing_principal", {"thingName": "{nothing}", "principal": "{cert}"},
+     "Failed to attach the principal {cert} to thing {nothing} because the thing does not exist in your account"),
+    ("detach_thing_principal", {"thingName": "{nothing}", "principal": "{cert}"},
+     "Failed to detach the principal {cert} from thing {nothing} because the thing does not exist in your account"),
+    ("attach_thing_principal", {"thingName": "{thing}", "principal": "{nocert}"},
+     "Can't attach the principal {nocert} to thing {thing} " + _NO_PRINCIPAL),
+    ("detach_thing_principal", {"thingName": "{thing}", "principal": "{nocert}"},
+     "Can't detach the principal {nocert} from thing {thing} " + _NO_PRINCIPAL),
+    ("list_principal_things", {"principal": "{nocert}"},
+     "Can't list things for the principal {nocert} " + _NO_PRINCIPAL),
+    ("list_thing_groups_for_thing", {"thingName": "{nothing}"}, "thing does not exist"),
+    ("create_thing", {"thingName": "{nothing}", "thingTypeName": "{notype}"},
+     "Thing Type {account}:{notype} not found."),
+    ("update_thing", {"thingName": "{thing}", "thingTypeName": "{notype}"},
+     "Thing Type {account}:{notype} not found."),
+    ("describe_thing_type", {"thingTypeName": "{notype}"}, "Thing Type {account}:{notype} not found."),
+    ("deprecate_thing_type", {"thingTypeName": "{notype}"}, "Thing Type {account}:{notype} not found."),
+    ("describe_thing_group", {"thingGroupName": "{nogroup}"}, "ThingGroup {account}:{nogroup} not found."),
+    ("update_thing_group", {"thingGroupName": "{nogroup}", "thingGroupProperties": {}},
+     "Group {nogroup} does not exist"),
+    ("create_thing_group", {"thingGroupName": "{nothing}", "parentGroupName": "{nogroup}"},
+     "Cannot create group using non-existing group as parent : {nogroup}"),
+    ("list_things_in_thing_group", {"thingGroupName": "{nogroup}"},
+     "Cannot find requested thing group for accountId: {account} and thing group name: {nogroup}"),
+    ("add_thing_to_thing_group", {"thingGroupName": "{nogroup}", "thingName": "{thing}"},
+     "Cannot find requested thing group for accountId: {account} and thing group name: {nogroup}"),
+    ("add_thing_to_thing_group", {"thingGroupName": "{group}", "thingName": "{nothing}"},
+     "Thing {nothing} not found."),
+    ("remove_thing_from_thing_group", {"thingGroupName": "{group}", "thingName": "{nothing}"},
+     "Thing {nothing} not found."),
+    ("describe_certificate", {"certificateId": "{nocert_id}"}, "CertificateId {nocert_id} does not exist"),
+    ("update_certificate", {"certificateId": "{nocert_id}", "newStatus": "INACTIVE"},
+     "CertificateId {nocert_id} does not exist"),
+    ("delete_certificate", {"certificateId": "{nocert_id}"}, "CertificateId {nocert_id} does not exist"),
+    ("describe_ca_certificate", {"certificateId": "{nocert_id}"},
+     "Requested CA Certificate does not exist."),
+    ("update_ca_certificate", {"certificateId": "{nocert_id}", "newStatus": "INACTIVE"},
+     "Requested CA Certificate does not exist."),
+    ("delete_ca_certificate", {"certificateId": "{nocert_id}"}, "Requested CA Certificate does not exist."),
+    ("get_policy", {"policyName": "{nopolicy}"}, "Policy default version not found"),
+    ("delete_policy", {"policyName": "{nopolicy}"}, "Policy not found"),
+    ("create_policy_version", {"policyName": "{nopolicy}", "policyDocument": "{document}"},
+     "Policy not found"),
+    ("get_policy_version", {"policyName": "{nopolicy}", "policyVersionId": "1"}, "Policy not found"),
+    ("list_policy_versions", {"policyName": "{nopolicy}"}, "Policy not found"),
+    ("delete_policy_version", {"policyName": "{nopolicy}", "policyVersionId": "1"}, "Policy not found"),
+    ("attach_policy", {"policyName": "{nopolicy}", "target": "{cert}"}, "Policy not found"),
+    ("list_targets_for_policy", {"policyName": "{nopolicy}"}, "Policy not found"),
+    ("get_policy_version", {"policyName": "{policy}", "policyVersionId": "9"},
+     "Policy version does not exist (name={policy}, versionId=9)"),
+    ("delete_policy_version", {"policyName": "{policy}", "policyVersionId": "9"},
+     "Policy version does not exist (name={policy}, versionId=9)"),
+    ("delete_provisioning_template", {"templateName": "{nothing}"},
+     "Unable to delete template, template not found"),
+])
+def test_iot_not_found_messages(iot_client, operation, kwargs, message):
+    """A call naming a registry resource that does not exist answers in AWS's words."""
+    thing, group, policy = _unique("thing"), _unique("group"), _unique("policy")
+    document = json.dumps({"Version": "2012-10-17", "Statement": [
+        {"Effect": "Allow", "Action": "iot:Connect", "Resource": "*"}]})
+    arn = iot_client.create_thing(thingName=thing)["thingArn"]
+    iot_client.create_thing_group(thingGroupName=group)
+    iot_client.create_policy(policyName=policy, policyDocument=document)
+    cert = iot_client.create_keys_and_certificate(setAsActive=False)
+    head, account = arn.rsplit(":", 1)[0], arn.split(":")[4]
+    names = {
+        "thing": thing, "group": group, "policy": policy, "cert": cert["certificateArn"],
+        "nothing": _unique("nothing"), "nogroup": _unique("nogroup"), "notype": _unique("notype"),
+        "nopolicy": _unique("nopolicy"), "nocert_id": "ab" * 32, "nocert": f"{head}:cert/{'ab' * 32}",
+        "account": account, "document": document,
+    }
+    try:
+        with pytest.raises(ClientError) as ei:
+            getattr(iot_client, operation)(**{
+                key: value.format(**names) if isinstance(value, str) else value for key, value in kwargs.items()})
+        error = ei.value.response["Error"]
+        status = ei.value.response["ResponseMetadata"]["HTTPStatusCode"]
+        assert (status, error["Code"], error["Message"]) == (404, "ResourceNotFoundException", message.format(**names))
+    finally:
+        iot_client.delete_certificate(certificateId=cert["certificateId"])
+        iot_client.delete_policy(policyName=policy)
+        iot_client.delete_thing_group(thingGroupName=group)
+        iot_client.delete_thing(thingName=thing)
+
+
 def test_iot_update_thing_increments_version(iot_client):
     name = _unique("thing")
     iot_client.create_thing(thingName=name)
@@ -702,6 +795,12 @@ def test_iot_delete_thing_type_refused_while_a_thing_uses_it(iot_client):
     iot_client.delete_thing(thingName=thing)
 
 
+
+def test_iot_delete_thing_type_of_an_unknown_name_succeeds(iot_client):
+    """DeleteThingType answers 200 for a name that does not exist."""
+    resp = iot_client.delete_thing_type(thingTypeName=_unique("type"))
+    assert resp["ResponseMetadata"]["HTTPStatusCode"] == 200
+
 # ---------------------------------------------------------------------------
 # ThingGroup CRUD + membership
 # ---------------------------------------------------------------------------
@@ -826,6 +925,12 @@ def test_iot_delete_thing_group_with_child_groups_is_refused(iot_client):
     iot_client.delete_thing_group(thingGroupName=parent)
 
 
+def test_iot_delete_thing_group_of_an_unknown_name_succeeds(iot_client):
+    """DeleteThingGroup answers 200 for a name that does not exist."""
+    resp = iot_client.delete_thing_group(thingGroupName=_unique("group"))
+    assert resp["ResponseMetadata"]["HTTPStatusCode"] == 200
+
+
 def test_iot_thing_group_membership(iot_client):
     gname = _unique("group")
     tname = _unique("thing")
@@ -842,6 +947,24 @@ def test_iot_thing_group_membership(iot_client):
 
     iot_client.delete_thing(thingName=tname)
     iot_client.delete_thing_group(thingGroupName=gname)
+
+
+def test_iot_remove_thing_from_an_unknown_thing_group_succeeds(iot_client):
+    """An unknown group name answers 200; an unknown thing, or no group name at all, is refused."""
+    tname, gname = _unique("thing"), _unique("group")
+    iot_client.create_thing(thingName=tname)
+    resp = iot_client.remove_thing_from_thing_group(thingGroupName=_unique("group"), thingName=tname)
+    assert resp["ResponseMetadata"]["HTTPStatusCode"] == 200
+    with pytest.raises(iot_client.exceptions.ResourceNotFoundException):
+        iot_client.remove_thing_from_thing_group(thingGroupName=_unique("group"), thingName=_unique("thing"))
+    group_arn = iot_client.create_thing_group(thingGroupName=gname)["thingGroupArn"]
+    iot_client.add_thing_to_thing_group(thingGroupName=gname, thingName=tname)
+    with pytest.raises(iot_client.exceptions.ResourceNotFoundException):
+        iot_client.remove_thing_from_thing_group(thingGroupArn=group_arn, thingName=tname)
+    assert tname in iot_client.list_things_in_thing_group(thingGroupName=gname)["things"]
+    iot_client.remove_thing_from_thing_group(thingGroupName=gname, thingName=tname)
+    iot_client.delete_thing_group(thingGroupName=gname)
+    iot_client.delete_thing(thingName=tname)
 
 
 def test_iot_list_thing_groups_for_thing(iot_client):
@@ -1390,6 +1513,39 @@ def test_iot_delete_thing_refused_while_a_principal_is_attached(iot_client):
     iot_client.delete_certificate(certificateId=cert_id)
 
 
+def test_iot_delete_thing_of_an_unknown_name_succeeds(iot_client):
+    """DeleteThing answers 200 for a name that does not exist, also with expectedVersion."""
+    name = _unique("thing")
+    for params in ({}, {"expectedVersion": 1}, {"expectedVersion": 7}):
+        resp = iot_client.delete_thing(thingName=name, **params)
+        assert resp["ResponseMetadata"]["HTTPStatusCode"] == 200
+    with pytest.raises(iot_client.exceptions.ResourceNotFoundException):
+        iot_client.describe_thing(thingName=name)
+
+
+def test_iot_delete_thing_checks_expected_version(iot_client):
+    """A wrong expectedVersion is refused before the attached-principal check; the current one deletes."""
+    pytest.importorskip("cryptography")
+    name = _unique("thing")
+    iot_client.create_thing(thingName=name)
+    cert = iot_client.create_keys_and_certificate(setAsActive=False)
+    iot_client.attach_thing_principal(thingName=name, principal=cert["certificateArn"])
+    with pytest.raises(ClientError) as ei:
+        iot_client.delete_thing(thingName=name, expectedVersion=2)
+    err = ei.value.response
+    assert (err["ResponseMetadata"]["HTTPStatusCode"], err["Error"]["Code"], err["Error"]["Message"]) == (
+        409, "VersionConflictException", f"The version for thing {name} does not match the expected version.")
+    with pytest.raises(ClientError) as ei:
+        iot_client.delete_thing(thingName=name, expectedVersion=1)
+    assert ei.value.response["Error"]["Code"] == "InvalidRequestException"
+
+    iot_client.detach_thing_principal(thingName=name, principal=cert["certificateArn"])
+    iot_client.delete_thing(thingName=name, expectedVersion=1)
+    with pytest.raises(iot_client.exceptions.ResourceNotFoundException):
+        iot_client.describe_thing(thingName=name)
+    iot_client.delete_certificate(certificateId=cert["certificateId"])
+
+
 def test_iot_thing_arn_tail_parser_requires_iot_thing_scope():
     from ministack.core.responses import (
         get_account_id,
@@ -1809,6 +1965,22 @@ def test_iot_legacy_principal_policy_unknown_policy_404(iot_client):
             policyName=_unique("nope"), principal="arn:aws:iot:cert/none"
         )
     assert ei.value.response["Error"]["Code"] == "ResourceNotFoundException"
+
+
+def test_iot_detach_policy_of_an_unknown_policy_succeeds(iot_client):
+    """DetachPolicy succeeds for an unknown policy; AttachPolicy and DetachPrincipalPolicy refuse it."""
+    pytest.importorskip("cryptography")
+    name = _unique("policy")
+    cert = iot_client.create_keys_and_certificate(setAsActive=False)
+    arn = cert["certificateArn"]
+    for target in (arn, arn.rsplit("/", 1)[0] + "/" + "ab" * 32):
+        resp = iot_client.detach_policy(policyName=name, target=target)
+        assert resp["ResponseMetadata"]["HTTPStatusCode"] == 200
+    with pytest.raises(iot_client.exceptions.ResourceNotFoundException):
+        iot_client.detach_principal_policy(policyName=name, principal=arn)
+    with pytest.raises(iot_client.exceptions.ResourceNotFoundException):
+        iot_client.attach_policy(policyName=name, target=arn)
+    iot_client.delete_certificate(certificateId=cert["certificateId"])
     
     
 # ---------------------------------------------------------------------------
@@ -1824,7 +1996,8 @@ def _provisioning_template_body() -> str:
         "Resources": {
             "certificate": {
                 "Type": "AWS::IoT::Certificate",
-                "Properties": {"CertificateId": {"Ref": "AWS::IoT::Certificate::Id"}},
+                "Properties": {"CertificateId": {"Ref": "AWS::IoT::Certificate::Id"},
+                               "Status": "ACTIVE"},
             },
             "thing": {
                 "Type": "AWS::IoT::Thing",
@@ -1924,9 +2097,60 @@ def test_iot_provisioning_template_body_must_carry_certificate_resource(iot_clie
             templateName=name, templateBody="not json{", provisioningRoleArn=role
         )
     assert ei.value.response["Error"]["Code"] == "InvalidRequestException"
+    assert ei.value.response["Error"]["Message"] == "The template body is invalid"
 
     with pytest.raises(ClientError):
         iot_client.describe_provisioning_template(templateName=name)
+
+
+def test_iot_provisioning_template_body_checks_the_certificate_resource(iot_client):
+    """The template body's certificate resource needs a CertificateId reference and an Active or Inactive Status."""
+    role = "arn:aws:iam::000000000000:role/provisioning"
+    cert_id = {"CertificateId": {"Ref": "AWS::IoT::Certificate::Id"}}
+    status_msg = 'A certificate resource must specify a Status of either "Active" or "Inactive"'
+    id_msg = "CertificateId must contain a reference to AWS::IoT::Certificate::Id"
+    thing = {"Type": "AWS::IoT::Thing", "Properties": {"ThingName": "t"}}
+
+    def cert(**props):
+        return {"Type": "AWS::IoT::Certificate", "Properties": props}
+
+    cases = [
+        ("FLEET_PROVISIONING", {"c": cert(**cert_id)}, status_msg),
+        ("JITP", {"c": cert(**cert_id)}, status_msg),
+        ("FLEET_PROVISIONING", {"c": cert(**cert_id, Status="PENDING_ACTIVATION")}, status_msg),
+        ("FLEET_PROVISIONING", {"c": cert(**cert_id, Status="")}, status_msg),
+        ("FLEET_PROVISIONING", {"c": cert(**cert_id, Status=None)}, status_msg),
+        ("FLEET_PROVISIONING", {"c": cert(**cert_id, Status={"Ref": "S"})}, status_msg),
+        ("JITP", {"c": cert()}, id_msg),
+        ("FLEET_PROVISIONING", {"c": cert(CertificateId="abc", Status="ACTIVE")}, id_msg),
+        ("FLEET_PROVISIONING", {"c": cert(CertificateSigningRequest={"Ref": "Csr"}, Status="ACTIVE")}, id_msg),
+        ("FLEET_PROVISIONING", {"c": {"Type": "AWS::IoT::Certificate"}},
+         "Properties of a resource cannot be null."),
+        ("FLEET_PROVISIONING", {"c": cert(**cert_id, Status="ACTIVE"),
+                                "t": {"Type": "AWS::IoT::Thing", "Properties": None}},
+         "Properties of a resource cannot be null."),
+        ("FLEET_PROVISIONING", {"a": cert(**cert_id, Status="ACTIVE"), "b": cert(**cert_id)},
+         "Only one certificate resource can be defined"),
+        ("FLEET_PROVISIONING", {"a": cert(**cert_id), "b": cert(**cert_id, Status="ACTIVE")}, status_msg),
+    ]
+    for kind, resources, message in cases:
+        name = _unique("provtemplate")
+        with pytest.raises(ClientError) as ei:
+            iot_client.create_provisioning_template(
+                templateName=name, templateBody=json.dumps({"Resources": resources}),
+                provisioningRoleArn=role, type=kind)
+        assert ei.value.response["Error"]["Code"] == "InvalidRequestException"
+        assert ei.value.response["Error"]["Message"] == f"The template body is invalid: {message}", resources
+        with pytest.raises(ClientError):
+            iot_client.describe_provisioning_template(templateName=name)
+
+    for kind, status in (("FLEET_PROVISIONING", "active"), ("JITP", "Inactive"),
+                         ("FLEET_PROVISIONING", "AcTiVe")):
+        name = _unique("provtemplate")
+        iot_client.create_provisioning_template(
+            templateName=name, provisioningRoleArn=role, type=kind,
+            templateBody=json.dumps({"Resources": {"c": cert(**cert_id, Status=status), "t": thing}}))
+        iot_client.delete_provisioning_template(templateName=name)
 
 
 def test_iot_provisioning_template_name_validation(iot_client):
@@ -1949,6 +2173,161 @@ def test_iot_provisioning_template_update_unknown_404(iot_client):
     assert ei.value.response["Error"]["Message"] == (
         f"Unable to find template named {name}"
     )
+
+
+def _versioned_template_body(marker: str) -> str:
+    return json.dumps({**json.loads(_provisioning_template_body()), "DeviceConfiguration": {"v": marker}})
+
+
+def test_iot_provisioning_template_versions(iot_client):
+    """Version ids count up and are never reused, the default cannot be deleted, and a template keeps five."""
+    name = _unique("provtemplate")
+    iot_client.create_provisioning_template(
+        templateName=name, templateBody=_versioned_template_body("1"),
+        provisioningRoleArn="arn:aws:iam::000000000000:role/provisioning",
+    )
+
+    def listed():
+        return [(v["versionId"], v["isDefaultVersion"])
+                for v in iot_client.list_provisioning_template_versions(templateName=name)["versions"]]
+
+    def describe():
+        desc = iot_client.describe_provisioning_template(templateName=name)
+        return desc["defaultVersionId"], json.loads(desc["templateBody"])["DeviceConfiguration"]["v"]
+
+    assert listed() == [(1, True)]
+    v1 = iot_client.describe_provisioning_template_version(templateName=name, versionId=1)
+    assert (v1["versionId"], v1["isDefaultVersion"], v1["templateBody"]) == (1, True, _versioned_template_body("1"))
+    assert "creationDate" in v1
+
+    created = iot_client.create_provisioning_template_version(
+        templateName=name, templateBody=_versioned_template_body("2"))
+    assert created["templateName"] == name
+    assert created["templateArn"].endswith(f":provisioningtemplate/{name}")
+    assert (created["versionId"], created["isDefaultVersion"]) == (2, False)
+    assert describe() == (1, "1")
+    modified = iot_client.describe_provisioning_template(templateName=name)["lastModifiedDate"]
+    created = iot_client.create_provisioning_template_version(
+        templateName=name, templateBody=_versioned_template_body("3"), setAsDefault=True)
+    assert (created["versionId"], created["isDefaultVersion"]) == (3, True)
+    assert describe() == (3, "3")
+    assert iot_client.describe_provisioning_template(templateName=name)["lastModifiedDate"] > modified
+    assert listed() == [(1, False), (2, False), (3, True)]
+
+    with pytest.raises(ClientError) as ei:
+        iot_client.delete_provisioning_template_version(templateName=name, versionId=3)
+    assert ei.value.response["Error"]["Code"] == "InvalidRequestException"
+    assert ei.value.response["Error"]["Message"] == (
+        "Unable to delete template version 3, it is the default version")
+
+    iot_client.update_provisioning_template(templateName=name, defaultVersionId=2)
+    assert describe() == (2, "2")
+    iot_client.delete_provisioning_template_version(templateName=name, versionId=1)
+    for missing in (1, 99):  # deleted, never created
+        with pytest.raises(ClientError) as ei:
+            iot_client.update_provisioning_template(templateName=name, defaultVersionId=missing)
+        assert ei.value.response["Error"]["Code"] == "InvalidRequestException"
+        assert ei.value.response["Error"]["Message"] == (
+            f"Unable to set version {missing} as the default, version does not exist")
+        with pytest.raises(ClientError) as ei:
+            iot_client.describe_provisioning_template_version(templateName=name, versionId=missing)
+        assert ei.value.response["Error"]["Code"] == "ResourceNotFoundException"
+        assert ei.value.response["Error"]["Message"] == (
+            f"Unable to find a template version with ID {missing} for template {name}")
+        with pytest.raises(ClientError) as ei:
+            iot_client.delete_provisioning_template_version(templateName=name, versionId=missing)
+        assert ei.value.response["Error"]["Code"] == "ResourceNotFoundException"
+        assert ei.value.response["Error"]["Message"] == f"Unable to find template version {missing}"
+
+    for version_id in (4, 5, 6):
+        assert iot_client.create_provisioning_template_version(
+            templateName=name, templateBody=_versioned_template_body(str(version_id)))["versionId"] == version_id
+    with pytest.raises(ClientError) as ei:
+        iot_client.create_provisioning_template_version(
+            templateName=name, templateBody=_versioned_template_body("7"), setAsDefault=True)
+    assert ei.value.response["Error"]["Code"] == "VersionsLimitExceededException"
+    assert ei.value.response["ResponseMetadata"]["HTTPStatusCode"] == 409
+    assert ei.value.response["Error"]["Message"] == (
+        f"Can't create a template version for the template {name}, "
+        "the maximum number of template versions has been reached")
+    assert describe() == (2, "2")
+    iot_client.delete_provisioning_template_version(templateName=name, versionId=6)
+    assert iot_client.create_provisioning_template_version(
+        templateName=name, templateBody=_versioned_template_body("7"))["versionId"] == 7
+    # All of them in one page, whatever maxResults asks for.
+    page = iot_client.list_provisioning_template_versions(templateName=name, maxResults=2)
+    assert [v["versionId"] for v in page["versions"]] == [2, 3, 4, 5, 7]
+    assert "nextToken" not in page
+
+    with pytest.raises(ClientError) as ei:
+        iot_client.create_provisioning_template_version(templateName=name, templateBody="not json")
+    assert ei.value.response["Error"]["Message"] == "The template body is invalid"
+    iot_client.delete_provisioning_template(templateName=name)
+
+
+def test_iot_provisioning_template_versions_of_an_unknown_template(iot_client):
+    name = _unique("provtemplate")
+    calls = (
+        (iot_client.list_provisioning_template_versions, {}, f"Template named {name} not found"),
+        (iot_client.describe_provisioning_template_version, {"versionId": 1},
+         f"Unable to find a template named {name}"),
+        (iot_client.create_provisioning_template_version, {"templateBody": _provisioning_template_body()},
+         f"Unable to find template named {name}"),
+        (iot_client.delete_provisioning_template_version, {"versionId": 1},
+         f"Unable to find template named {name}"),
+    )
+    for call, extra, message in calls:
+        with pytest.raises(ClientError) as ei:
+            call(templateName=name, **extra)
+        assert ei.value.response["Error"]["Code"] == "ResourceNotFoundException"
+        assert ei.value.response["Error"]["Message"] == message
+
+
+def test_iot_provisioning_template_versions_persist():
+    """Versions survive a state reload, and a template saved by older state comes back as version 1."""
+    import asyncio
+
+    from ministack.core.responses import set_request_account_id, set_request_region
+    from ministack.services import iot as iot_module
+
+    name = _unique("provtemplate")
+
+    async def _call(method, path, payload=None, qp=None):
+        set_request_account_id("123456789012")
+        set_request_region("eu-west-1")
+        body = json.dumps(payload).encode() if payload is not None else b""
+        status, _headers, out = await iot_module.handle_request(method, path, {}, body, qp or {})
+        return status, json.loads(out) if out else {}
+
+    async def _run():
+        assert (await _call("POST", "/provisioning-templates", {
+            "templateName": name, "templateBody": _versioned_template_body("1"),
+            "provisioningRoleArn": "arn:aws:iam::123456789012:role/provisioning",
+        }))[0] == 200
+        assert (await _call("POST", f"/provisioning-templates/{name}/versions",
+                            {"templateBody": _versioned_template_body("2")}, {"setAsDefault": "true"}))[0] == 200
+        saved = iot_module.get_state()
+        iot_module.reset()
+        iot_module.load_persisted_state(saved)
+        _status, out = await _call("GET", f"/provisioning-templates/{name}/versions")
+        assert [(v["versionId"], v["isDefaultVersion"]) for v in out["versions"]] == [(1, False), (2, True)]
+        _status, out = await _call("GET", f"/provisioning-templates/{name}")
+        assert out["templateBody"] == _versioned_template_body("2")
+
+        # What older versions saved: the body on the record and no versions.
+        record = saved["provisioning_templates"].get_scoped("123456789012", "eu-west-1", name)
+        record.update(templateBody=_versioned_template_body("1"), defaultVersionId=1)
+        del record["versions"], record["lastVersionId"]
+        iot_module.reset()
+        iot_module.load_persisted_state(saved)
+        _status, out = await _call("GET", f"/provisioning-templates/{name}")
+        assert (out["defaultVersionId"], out["templateBody"]) == (1, _versioned_template_body("1"))
+        assert "versions" not in out
+        _status, out = await _call("POST", f"/provisioning-templates/{name}/versions",
+                                   {"templateBody": _versioned_template_body("2")})
+        assert out["versionId"] == 2
+
+    asyncio.run(_run())
 
 
 def _hook_function_arn(lam, iam, permission: dict | None = None) -> str:
@@ -4464,7 +4843,7 @@ def test_iot_broker_persistent_sessions_are_region_isolated():
         west_state = _persistent_sessions[
             (account_id, "us-west-2", client_id)
         ]
-        assert east_state.queued_messages == [
+        assert [m[:3] for m in east_state.queued_messages] == [
             ("events/one", b"east-only", 1)
         ]
         assert west_state.queued_messages == []
@@ -5261,7 +5640,7 @@ def test_queue_bounded_to_1000_messages():
         assert len(ps.queued_messages) == 1000
 
         # Verify oldest messages were dropped (first 50 should be gone)
-        first_topic, first_payload, first_qos = ps.queued_messages[0]
+        first_topic, first_payload, first_qos = ps.queued_messages[0][:3]
         assert first_payload == b"msg50"
 
     asyncio.run(_run())
@@ -9130,6 +9509,63 @@ def test_iot_job_cancel_events():
     assert "forceCanceled" not in events[10][1]
 
 
+def test_iot_job_abort_events():
+    async def calls(call):
+        from ministack.services import iot as iot_module
+
+        for thing in ("ev-t1", "ev-t2", "ev-t3"):
+            await call("POST", f"/things/{thing}")
+        failed = {"failureType": "FAILED", "action": "CANCEL",
+                  "thresholdPercentage": 50.0, "minNumberOfExecutedThings": 2}
+        await _create_job(call, "ev-abort", ["ev-t1", "ev-t2", "ev-t3"],
+                          abortConfig={"criteriaList": [failed]})
+        await call("POST", "/things/ev-t1/jobs/ev-abort", {"status": "SUCCEEDED"}, device=True)
+        await iot_module.broker_publish(
+            _EVENTS_ACCOUNT, _TEST_REGION, "$aws/things/ev-t2/jobs/ev-abort/update",
+            json.dumps({"status": "FAILED"}).encode(),
+        )
+        timed_out = {**failed, "failureType": "TIMED_OUT", "minNumberOfExecutedThings": 1}
+        await _create_job(call, "ev-timeout", ["ev-t1", "ev-t2"],
+                          abortConfig={"criteriaList": [timed_out]},
+                          timeoutConfig={"inProgressTimeoutInMinutes": 1})
+        await call("POST", "/things/ev-t1/jobs/ev-timeout", {"status": "IN_PROGRESS"}, device=True)
+        iot_module._job_executions[("ev-t1", "ev-timeout")]["startedAt"] -= 61_000
+        await call("GET", "/things/ev-t1/jobs/ev-timeout", device=True)
+
+    events = _registry_events(calls, enable=("JOB", "JOB_EXECUTION"))
+    assert [t for t, _e in events] == [
+        "$aws/events/jobExecution/ev-abort/succeeded",
+        "$aws/events/jobExecution/ev-abort/failed",
+        "$aws/events/job/ev-abort/cancellation_in_progress",
+        "$aws/events/jobExecution/ev-abort/canceled",
+        "$aws/events/job/ev-abort/canceled",
+        "$aws/events/jobExecution/ev-timeout/timed_out",
+        "$aws/events/job/ev-timeout/cancellation_in_progress",
+        "$aws/events/jobExecution/ev-timeout/canceled",
+        "$aws/events/job/ev-timeout/canceled",
+    ]
+    for _t, e in events:
+        e.pop("eventId")
+        _job_stamps(e)
+    abort = {
+        "eventType": "JOB", "jobId": "ev-abort", "targetSelection": "SNAPSHOT",
+        "targets": [f"{_JOB_ARN}:thing/ev-t1", f"{_JOB_ARN}:thing/ev-t2", f"{_JOB_ARN}:thing/ev-t3"],
+        "forceCanceled": False, "reasonCode": "ABORT_CANCEL",
+        "comment": "Abort criteria for failure type FAILED with threshold 50.00% met. "
+                   "Total completed executions: 2, total FAILED executions: 1",
+    }
+    assert events[2][1] == {**abort, "operation": "cancellation_in_progress",
+                            "status": "CANCELLATION_IN_PROGRESS"}
+    assert events[3][1]["thingArn"] == f"{_JOB_ARN}:thing/ev-t3"
+    assert events[4][1] == {**abort, "operation": "canceled", "status": "CANCELED",
+                            "jobProcessDetails": _job_counts(Canceled=1, Failed=1, Succeeded=1)}
+    assert events[8][1]["comment"] == (
+        "Abort criteria for failure type TIMED_OUT with threshold 50.00% met. "
+        "Total completed executions: 1, total TIMED_OUT executions: 1"
+    )
+    assert events[8][1]["jobProcessDetails"] == _job_counts(Canceled=1, TimedOut=1)
+
+
 def test_iot_job_removed_timed_out_and_deleted_events():
     async def calls(call):
         from ministack.services import iot as iot_module
@@ -9150,7 +9586,7 @@ def test_iot_job_removed_timed_out_and_deleted_events():
         await call("POST", "/things/ev-t4/jobs/ev-timeout",
                    {"status": "IN_PROGRESS", "statusDetails": {"d": "1"}}, device=True)
         iot_module._job_executions[("ev-t4", "ev-timeout")]["startedAt"] -= 61_000
-        await call("GET", "/things/ev-t4/jobs/ev-timeout", device=True)
+        await call("GET", "/things/ev-t4/jobs", device=True)
         await call("DELETE", "/jobs/ev-timeout")
         await call("DELETE", "/jobs/ev-cont", query={"force": "true"})
 
@@ -9470,6 +9906,41 @@ def test_iot_register_certificate_without_ca_pem_links_the_signing_ca(iot_client
             assert desc["caCertificateId"] == ca_id
             listing = iot_client.list_certificates_by_ca(caCertificateId=ca_id)
             assert [c["certificateId"] for c in listing["certificates"]] == [cert_id]
+    finally:
+        _delete_certificates_and_cas(iot_client, cert_ids, ca_ids)
+
+
+def test_iot_register_certificate_takes_the_mode_of_its_ca(iot_client):
+    """A certificate registered under a CA reports the CA's mode; RegisterCertificateWithoutCA stays SNI_ONLY."""
+    modes, ca_ids, cert_ids = {}, [], []
+    try:
+        for ca_mode in ("SNI_ONLY", "DEFAULT"):
+            ca_pem, verification_pem, leaves = _generate_ca_and_leaves(
+                _registration_code(iot_client), count=3)
+            ca_ids.append(iot_client.register_ca_certificate(
+                caCertificate=ca_pem, setAsActive=True, certificateMode=ca_mode,
+                **({"verificationCertificate": verification_pem} if ca_mode == "DEFAULT" else {}),
+            )["certificateId"])
+            with_ca_pem, no_ca_pem, without_ca = leaves
+            registered = {
+                "with-ca-pem": iot_client.register_certificate(
+                    certificatePem=with_ca_pem, caCertificatePem=ca_pem, status="ACTIVE"),
+                "no-ca-pem": iot_client.register_certificate(certificatePem=no_ca_pem, status="ACTIVE"),
+                "without-ca": iot_client.register_certificate_without_ca(
+                    certificatePem=without_ca, status="ACTIVE"),
+            }
+            for case, resp in registered.items():
+                cert_ids.append(resp["certificateId"])
+                modes[ca_mode, case] = iot_client.describe_certificate(
+                    certificateId=resp["certificateId"])["certificateDescription"]["certificateMode"]
+        assert modes == {
+            ("SNI_ONLY", "with-ca-pem"): "SNI_ONLY",
+            ("SNI_ONLY", "no-ca-pem"): "SNI_ONLY",
+            ("SNI_ONLY", "without-ca"): "SNI_ONLY",
+            ("DEFAULT", "with-ca-pem"): "DEFAULT",
+            ("DEFAULT", "no-ca-pem"): "DEFAULT",
+            ("DEFAULT", "without-ca"): "SNI_ONLY",
+        }
     finally:
         _delete_certificates_and_cas(iot_client, cert_ids, ca_ids)
 
