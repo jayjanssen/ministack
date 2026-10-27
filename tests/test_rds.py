@@ -17188,6 +17188,7 @@ def test_rds_cluster_performance_insights_handoff(imm_state, monkeypatch, engine
         assert instance["PerformanceInsightsEnabled"] is True
         assert instance["PerformanceInsightsKMSKeyId"] == key
         assert instance["PerformanceInsightsRetentionPeriod"] == 7
+        assert instance["DatabaseInsightsMode"] == "standard"
     client.modify_db_cluster(DBClusterIdentifier=cluster_id, EnablePerformanceInsights=False)
     for instance in client.describe_db_instances()["DBInstances"]:
         assert instance["PerformanceInsightsEnabled"] is False

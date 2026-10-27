@@ -9664,6 +9664,7 @@ def _instance_xml(i):
         <IAMDatabaseAuthenticationEnabled>{str(i.get('IAMDatabaseAuthenticationEnabled',False)).lower()}</IAMDatabaseAuthenticationEnabled>
         <PerformanceInsightsEnabled>{str(i.get('PerformanceInsightsEnabled',False)).lower()}</PerformanceInsightsEnabled>
         {_performance_insights_details_xml(i)}
+        <DatabaseInsightsMode>{i.get('DatabaseInsightsMode', 'standard')}</DatabaseInsightsMode>
         <EnabledCloudwatchLogsExports/>
         <ProcessorFeatures/>
         <DeletionProtection>{str(i.get('DeletionProtection',False)).lower()}</DeletionProtection>
