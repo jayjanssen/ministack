@@ -4632,7 +4632,12 @@ def _unregister_instance_from_clusters(db_id):
     """Remove instance from any cluster member list."""
     for cl in _clusters.values():
         mem = cl.get("DBClusterMembers") or []
-        cl["DBClusterMembers"] = [m for m in mem if m.get("DBInstanceIdentifier") != db_id]
+        kept = [m for m in mem if m.get("DBInstanceIdentifier") != db_id]
+        if len(kept) == len(mem):
+            # Another cluster's status must not change; a member of it may be
+            # mid-reboot, and nothing would restore its status afterward.
+            continue
+        cl["DBClusterMembers"] = kept
         _sync_cluster_endpoints(cl)
         _refresh_cluster_status(cl.get("DBClusterIdentifier"))
 
@@ -5752,10 +5757,15 @@ def _finish_instance_reboot(instance, cluster):
             endpoint = instance.get("Endpoint", {})
             host = instance.get("_internal_address") or "127.0.0.1"
             port = instance.get("_internal_port") or instance.get("_HostPort") or endpoint.get("Port")
+            user = instance.get("MasterUsername", "root")
+            password = instance.get("_MasterUserPassword", "password")
+            if cluster:
+                user = cluster.get("MasterUsername", user)
+                pending = cluster.get("_pending_master_password_rotation")
+                password = pending["old_password"] if pending else cluster.get("_MasterUserPassword", password)
             if not _wait_for_database_ready(
                 host, port, instance.get("Engine", "mysql"),
-                instance.get("MasterUsername", "root"),
-                instance.get("_MasterUserPassword", "password"),
+                user, password,
                 instance.get("DBName"), alive,
             ):
                 raise RuntimeError("database stopped before reboot readiness")
@@ -5769,6 +5779,7 @@ def _finish_instance_reboot(instance, cluster):
     finally:
         if cluster:
             _end_mysql_global_instance_mutation(cluster)
+            _refresh_cluster_status(cluster.get("DBClusterIdentifier"))
 
 
 # ---------------------------------------------------------------------------
