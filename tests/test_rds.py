@@ -5101,7 +5101,7 @@ def test_rds_reboot_follows_container_to_its_new_address(monkeypatch, reboot_ins
                "_shared_endpoint": {"Address": "10.0.0.7", "Port": 3306}}
     reboot_instance.update({"_shared_cluster_id": "reboot-cluster", "_internal_address": "10.0.0.7",
                             "_internal_port": 3306, "Endpoint": {"Address": "10.0.0.7", "Port": 3306}})
-    sibling = {"DBInstanceIdentifier": "reboot-sibling", "_internal_address": "10.0.0.7",
+    sibling = {"DBInstanceIdentifier": "reboot-sibling", "_docker_container_id": "owned", "_internal_address": "10.0.0.7",
                "Endpoint": {"Address": "10.0.0.7", "Port": 3306}}
     monkeypatch.setitem(_imm_rds._instances, "reboot-sibling", sibling)
     monkeypatch.setattr(_imm_rds, "_ministack_network", "ms-net")
